@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: tunneler-dev
+    volumes:
+      - .:/app
+      - /app/__pycache__
+      - ~/.gitconfig:/home/developer/.gitconfig
+      - ~/.ssh:/home/developer/.ssh
+    ports:
+      - "8000:8000"  # API
+      - "1280:1280"  # OpenZiti Controller
+      - "3022:3022"  # OpenZiti Router
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/tunneldb
+      - OPENZITI_CTRL_ENDPOINT=http://ziti-controller:1280
+      - OPENZITI_USERNAME=admin
+      - OPENZITI_PASSWORD=admin
+    depends_on:
+      - ziti-controller
+      - postgres
+    networks:
+      - ziti
+    tty: true
+    stdin_open: true
+
+  # OpenZiti Controller
+  ziti-controller:
+    image: openziti/quickstart:latest
+    container_name: ziti-controller
+    restart: unless-stopped
+    ports:
+      - "1280:1280"
+      - "6262:6262"
+    environment:
+      - ZITI_CTRL_EDGE_ADVERTISED_ADDRESS=ziti-controller
+      - ZITI_CTRL_EDGE_ADVERTISED_PORT=1280
+    volumes:
+      - ./data/controller:/openziti
+    networks:
+      - ziti
+
+  # OpenZiti Router
+  ziti-router:
+    image: openziti/quickstart:latest
+    container_name: ziti-router
+    restart: unless-stopped
+    ports:
+      - "3022:3022"
+    environment:
+      - ZITI_ROUTER_NAME=ziti-router
+      - ZITI_CTRL_ENDPOINT=ziti-controller:6262
+    volumes:
+      - ./data/router:/openziti
+    depends_on:
+      - ziti-controller
+    networks:
+      - ziti
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:14-alpine
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=tunneldb
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - ziti
+
+networks:
+  ziti:
+    driver: bridge

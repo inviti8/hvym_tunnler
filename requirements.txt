@@ -1,0 +1,20 @@
+openziti-sdk-python>=0.1.0
+fastapi>=0.68.0
+uvicorn>=0.15.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.5
+sqlalchemy>=1.4.0
+pydantic>=1.8.0
+python-dotenv>=0.19.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.5
+# Testing
+pytest>=6.2.5
+pytest-cov>=2.12.1
+# Code quality
+black>=21.7b0
+flake8>=3.9.2
+mypy>=0.910
+isort>=5.9.3
