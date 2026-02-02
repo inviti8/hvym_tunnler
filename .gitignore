@@ -1,2 +1,16 @@
 
 .claude/
+
+.env.example
+
+app/__pycache__/
+
+app/api/__pycache__/
+
+app/auth/__pycache__/
+
+app/registry/__pycache__/
+
+app/tunnel/__pycache__/
+
+tests/__pycache__/

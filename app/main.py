@@ -1,20 +1,82 @@
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
-import logging
+"""
+HVYM Tunnler Server - Main Application
 
-from .services.ziti_service import ZitiService
+Provides WebSocket-based tunneling with Stellar JWT authentication.
+"""
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
+from fastapi.middleware.cors import CORSMiddleware
+
+from .config import Settings, get_settings
+from .auth.jwt_verifier import StellarJWTVerifier
+from .auth.session import SessionManager, TunnelSession
+from .tunnel.connection import TunnelConnectionManager
+from .registry.store import TunnelRegistry
+from .api.routes import router as api_router
+
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+def setup_logging(level: str = "INFO"):
+    """Configure application logging."""
+    logging.basicConfig(
+        level=getattr(logging, level.upper()),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
-# Initialize FastAPI app
+
+logger = logging.getLogger("hvym_tunnler")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifecycle management."""
+    settings = get_settings()
+    setup_logging(settings.log_level)
+
+    logger.info("HVYM Tunnler starting...")
+    logger.info(f"Server address: {settings.server_address or '(not configured)'}")
+    logger.info(f"Domain: {settings.domain}")
+
+    # Initialize components
+    app.state.jwt_verifier = StellarJWTVerifier(
+        server_address=settings.server_address,
+        server_secret=settings.server_secret,
+        clock_skew_seconds=settings.jwt_clock_skew
+    )
+
+    app.state.session_manager = SessionManager()
+
+    app.state.registry = TunnelRegistry(
+        redis_url=settings.redis_url,
+        server_address=settings.server_address
+    )
+
+    app.state.connection_manager = TunnelConnectionManager(
+        registry=app.state.registry,
+        session_manager=app.state.session_manager,
+        domain=settings.domain
+    )
+
+    logger.info("HVYM Tunnler ready")
+
+    yield
+
+    # Cleanup
+    logger.info("HVYM Tunnler shutting down...")
+    await app.state.connection_manager.shutdown()
+    await app.state.registry.close()
+    logger.info("HVYM Tunnler stopped")
+
+
+# Create FastAPI app
 app = FastAPI(
-    title="OpenZiti Tunneling Service",
-    description="API for managing secure tunnels using OpenZiti",
-    version="0.1.0"
+    title="HVYM Tunnler",
+    description="Stellar-authenticated tunneling service for Heavymeta network",
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # CORS middleware
@@ -26,91 +88,117 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Ziti service
-ziti_service = ZitiService(
-    controller_url="http://ziti-controller:1280",
-    admin_username="admin",
-    admin_password="admin"
-)
+# Include API routes
+app.include_router(api_router)
 
-# Startup event
-@app.on_event("startup")
-async def startup_event():
-    try:
-        await ziti_service.initialize()
-        logger.info("Ziti service initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize Ziti service: {e}")
-        raise
-
-# Models
-class TunnelCreate(BaseModel):
-    user_id: str
-    service_name: str
-    local_port: int
-    protocol: str = "tcp"
-
-class TunnelResponse(BaseModel):
-    service_id: str
-    identity: str
-    jwt: str
-    local_port: int
-    status: str
-
-# API Endpoints
-@app.post("/tunnels/", response_model=TunnelResponse, status_code=status.HTTP_201_CREATED)
-async def create_tunnel(tunnel: TunnelCreate):
-    """Create a new tunnel"""
-    try:
-        return await ziti_service.create_tunnel(
-            user_id=tunnel.user_id,
-            service_name=tunnel.service_name,
-            local_port=tunnel.local_port,
-            protocol=tunnel.protocol
-        )
-    except Exception as e:
-        logger.error(f"Error creating tunnel: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create tunnel: {str(e)}"
-        )
-
-@app.get("/tunnels/", response_model=List[dict])
-async def list_tunnels():
-    """List all active tunnels"""
-    try:
-        return await ziti_service.list_tunnels()
-    except Exception as e:
-        logger.error(f"Error listing tunnels: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to list tunnels"
-        )
-
-@app.get("/tunnels/{service_id}", response_model=dict)
-async def get_tunnel(service_id: str):
-    """Get details of a specific tunnel"""
-    tunnel = await ziti_service.get_tunnel(service_id)
-    if tunnel is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tunnel not found"
-        )
-    return tunnel
-
-@app.delete("/tunnels/{service_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_tunnel(service_id: str):
-    """Delete a tunnel"""
-    success = await ziti_service.close_tunnel(service_id)
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tunnel not found or error deleting"
-        )
-    return {"status": "deleted"}
 
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "ok"}
+    """Health check endpoint."""
+    settings = get_settings()
+    return {
+        "status": "healthy",
+        "service": "hvym_tunnler",
+        "server_address": settings.server_address or "(not configured)"
+    }
+
+
+# Server info endpoint
+@app.get("/info")
+async def server_info():
+    """Get server information for client configuration."""
+    settings = get_settings()
+    return {
+        "server_address": settings.server_address,
+        "websocket_url": f"wss://{settings.domain}/connect",
+        "services": settings.allowed_services,
+        "version": "1.0.0"
+    }
+
+
+# WebSocket tunnel endpoint
+@app.websocket("/connect")
+async def websocket_tunnel(websocket: WebSocket):
+    """
+    WebSocket endpoint for tunnel connections.
+
+    Authentication via Authorization header with Stellar JWT.
+    """
+    jwt_verifier: StellarJWTVerifier = app.state.jwt_verifier
+    connection_manager: TunnelConnectionManager = app.state.connection_manager
+    settings = get_settings()
+
+    # Extract JWT from headers or query params
+    auth_header = websocket.headers.get("authorization", "")
+    jwt_token = None
+
+    if auth_header.startswith("Bearer "):
+        jwt_token = auth_header[7:]  # Remove "Bearer " prefix
+    else:
+        # Check query params (fallback for browsers)
+        jwt_token = websocket.query_params.get("token")
+
+    if not jwt_token:
+        logger.warning("Connection attempt without authorization")
+        await websocket.close(code=4001, reason="Missing authorization")
+        return
+
+    # Verify JWT
+    try:
+        claims = jwt_verifier.verify(jwt_token)
+    except Exception as e:
+        logger.warning(f"JWT verification failed: {e}")
+        await websocket.close(code=4002, reason=f"Authentication failed: {e}")
+        return
+
+    # Check services are allowed
+    requested_services = claims.get('services', ['pintheon'])
+    for service in requested_services:
+        if service not in settings.allowed_services:
+            logger.warning(f"Service not allowed: {service}")
+            await websocket.close(
+                code=4003,
+                reason=f"Service not allowed: {service}"
+            )
+            return
+
+    # Accept connection
+    await websocket.accept()
+    logger.info(f"Client connected: {claims['sub']}")
+
+    # Create session
+    session = TunnelSession(
+        stellar_address=claims['sub'],
+        services=requested_services,
+        expires_at=claims.get('exp')
+    )
+
+    # Derive shared key if possible
+    try:
+        session.shared_key = jwt_verifier.derive_shared_key(claims['sub'])
+    except Exception as e:
+        logger.debug(f"Could not derive shared key: {e}")
+
+    # Handle connection
+    try:
+        await connection_manager.handle_connection(websocket, session)
+    except WebSocketDisconnect:
+        logger.info(f"Client disconnected: {session.stellar_address}")
+    except Exception as e:
+        logger.error(f"Connection error for {session.stellar_address}: {e}")
+    finally:
+        await connection_manager.remove_connection(session.stellar_address)
+
+
+# Development server entry point
+if __name__ == "__main__":
+    import uvicorn
+    settings = get_settings()
+    uvicorn.run(
+        "app.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+        log_level=settings.log_level.lower()
+    )

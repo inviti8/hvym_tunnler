@@ -1,20 +1,31 @@
-openziti-sdk-python>=0.1.0
-fastapi>=0.68.0
-uvicorn>=0.15.0
-python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
-python-multipart>=0.0.5
-sqlalchemy>=1.4.0
-pydantic>=1.8.0
-python-dotenv>=0.19.0
-python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
-python-multipart>=0.0.5
+# HVYM Tunnler Server Requirements
+# Core
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+websockets>=12.0
+pydantic>=2.0
+pydantic-settings>=2.0
+
+# Stellar/Crypto
+hvym_stellar>=0.22.0
+stellar-sdk>=9.0.0
+pynacl>=1.5.0
+
+# Storage
+redis>=5.0.0
+
+# Utilities
+pyyaml>=6.0
+python-multipart>=0.0.6
+httpx>=0.26.0
+python-dotenv>=1.0.0
+
 # Testing
-pytest>=6.2.5
-pytest-cov>=2.12.1
+pytest>=7.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.0.0
+
 # Code quality
-black>=21.7b0
-flake8>=3.9.2
-mypy>=0.910
-isort>=5.9.3
+black>=23.0.0
+ruff>=0.1.0
+mypy>=1.0.0
