@@ -1,1 +1,1 @@
-"""HVYM Tunnler Server Tests."""
+"""HVYM Tunnler tests."""

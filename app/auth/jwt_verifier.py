@@ -1,41 +1,36 @@
 """
 Stellar JWT Verification for HVYM Tunnler.
 
-Verifies JWTs signed with Stellar Ed25519 keys.
+Uses hvym_stellar's StellarJWTTokenVerifier for JWT verification.
 """
 
-import json
-import time
-import base64
 import logging
 from typing import Dict, Any, Optional
 
-from nacl.signing import VerifyKey
-from nacl.public import Box
 from stellar_sdk import Keypair
+
+try:
+    from hvym_stellar import (
+        Stellar25519KeyPair,
+        StellarJWTTokenVerifier,
+        StellarJWTSession
+    )
+    HVYM_STELLAR_AVAILABLE = True
+except ImportError:
+    HVYM_STELLAR_AVAILABLE = False
+    Stellar25519KeyPair = None
+    StellarJWTTokenVerifier = None
+    StellarJWTSession = None
 
 logger = logging.getLogger("hvym_tunnler.jwt_verifier")
 
 
-def _base64url_decode(data: str) -> bytes:
-    """Decode base64url string to bytes."""
-    padding = 4 - (len(data) % 4)
-    if padding != 4:
-        data += '=' * padding
-    return base64.urlsafe_b64decode(data.encode('utf-8'))
-
-
-def _stellar_address_to_pubkey(address: str) -> bytes:
-    """Extract Ed25519 public key from Stellar address."""
-    return Keypair.from_public_key(address).raw_public_key()
-
-
 class StellarJWTVerifier:
     """
-    Verifies Stellar-signed JWT tokens.
+    Wrapper around hvym_stellar's JWT verification.
 
-    Extracts the signer's public key from the `sub` claim (Stellar address)
-    and verifies the Ed25519 signature.
+    Provides server-side JWT verification and shared key derivation
+    using the hvym_stellar library.
     """
 
     def __init__(
@@ -52,18 +47,19 @@ class StellarJWTVerifier:
             server_secret: Server's secret key (for deriving shared keys)
             clock_skew_seconds: Allowed clock skew for expiration
         """
+        if not HVYM_STELLAR_AVAILABLE:
+            raise ImportError(
+                "hvym_stellar library required: pip install hvym_stellar"
+            )
+
         self.server_address = server_address
         self.clock_skew = clock_skew_seconds
-        self._server_keypair: Optional[Keypair] = None
-        self._server_private_key = None
+        self._server_keypair: Optional[Stellar25519KeyPair] = None
 
         # Create server keypair for ECDH if secret provided
         if server_secret:
-            self._server_keypair = Keypair.from_secret(server_secret)
-            # Convert to X25519 for ECDH
-            from nacl.signing import SigningKey
-            signing_key = SigningKey(self._server_keypair.raw_secret_key())
-            self._server_private_key = signing_key.to_curve25519_private_key()
+            stellar_kp = Keypair.from_secret(server_secret)
+            self._server_keypair = Stellar25519KeyPair(stellar_kp)
 
     def verify(self, jwt_string: str) -> Dict[str, Any]:
         """
@@ -78,67 +74,17 @@ class StellarJWTVerifier:
         Raises:
             ValueError: If verification fails
         """
-        # Parse JWT
-        parts = jwt_string.split('.')
-        if len(parts) != 3:
-            raise ValueError("Invalid JWT format: expected 3 parts")
+        # Use hvym_stellar's verifier
+        verifier = StellarJWTTokenVerifier(jwt_string)
 
-        header_b64, payload_b64, signature_b64 = parts
+        # Verify with audience check
+        claims = verifier.verify(
+            expected_audience=self.server_address,
+            expected_issuer="hvym_tunnler"
+        )
 
-        # Decode components
-        try:
-            header = json.loads(_base64url_decode(header_b64))
-            payload = json.loads(_base64url_decode(payload_b64))
-            signature = _base64url_decode(signature_b64)
-        except Exception as e:
-            raise ValueError(f"Failed to decode JWT: {e}")
-
-        # Verify algorithm
-        if header.get('alg') != 'EdDSA':
-            raise ValueError(f"Unsupported algorithm: {header.get('alg')}")
-
-        # Verify required claims
-        for claim in ['iss', 'sub', 'aud', 'iat']:
-            if claim not in payload:
-                raise ValueError(f"Missing required claim: {claim}")
-
-        # Verify issuer
-        if payload['iss'] != 'hvym_tunnler':
-            raise ValueError(f"Invalid issuer: {payload['iss']}")
-
-        # Verify audience (must be this server)
-        if payload['aud'] != self.server_address:
-            raise ValueError(
-                f"Audience mismatch: expected {self.server_address}, "
-                f"got {payload['aud']}"
-            )
-
-        # Verify expiration
-        if 'exp' in payload:
-            current_time = int(time.time())
-            if current_time > payload['exp'] + self.clock_skew:
-                raise ValueError(
-                    f"Token expired at {payload['exp']} "
-                    f"(current time: {current_time})"
-                )
-
-        # Extract public key from sub claim
-        try:
-            client_address = payload['sub']
-            pubkey_bytes = _stellar_address_to_pubkey(client_address)
-            verify_key = VerifyKey(pubkey_bytes)
-        except Exception as e:
-            raise ValueError(f"Invalid Stellar address in sub: {e}")
-
-        # Verify signature
-        signing_input = f"{header_b64}.{payload_b64}".encode('utf-8')
-        try:
-            verify_key.verify(signing_input, signature)
-        except Exception as e:
-            raise ValueError(f"Signature verification failed: {e}")
-
-        logger.info(f"JWT verified for: {client_address}")
-        return payload
+        logger.info(f"JWT verified for: {claims['sub']}")
+        return claims
 
     def derive_shared_key(self, client_address: str) -> bytes:
         """
@@ -150,14 +96,13 @@ class StellarJWTVerifier:
         Returns:
             32-byte shared key
         """
-        if not self._server_private_key:
+        if not self._server_keypair:
             raise ValueError("Server keypair not configured")
 
-        # Get client's public key and convert to X25519
-        client_pubkey = _stellar_address_to_pubkey(client_address)
-        verify_key = VerifyKey(client_pubkey)
-        client_x25519 = verify_key.to_curve25519_public_key()
+        # Use hvym_stellar's session for key derivation
+        session = StellarJWTSession(
+            server_keypair=self._server_keypair,
+            client_stellar_address=client_address
+        )
 
-        # Compute shared secret
-        box = Box(self._server_private_key, client_x25519)
-        return box.shared_key()
+        return session.derive_tunnel_key()

@@ -128,9 +128,11 @@ async def get_stats(request: Request):
     connection_manager = request.app.state.connection_manager
     registry = request.app.state.registry
     session_manager = request.app.state.session_manager
+    challenge_manager = request.app.state.challenge_manager
 
     return {
         "active_connections": connection_manager.connection_count,
         "registered_tunnels": await registry.count(),
-        "active_sessions": session_manager.count
+        "active_sessions": session_manager.count,
+        "security": challenge_manager.get_stats()
     }

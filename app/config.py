@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     jwt_clock_skew: int = 60  # seconds
     session_timeout: int = 86400  # 24 hours
 
+    # Challenge-Response Security
+    challenge_ttl: int = 30  # seconds before challenge expires
+    rate_limit_window: int = 60  # rate limit window in seconds
+    rate_limit_max_attempts: int = 10  # max auth attempts per window
+    rate_limit_block_duration: int = 300  # block duration after exceeding limit
+
     # Services
     allowed_services: List[str] = ["pintheon", "ipfs"]
 
