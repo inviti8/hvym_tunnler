@@ -14,3 +14,5 @@ app/registry/__pycache__/
 app/tunnel/__pycache__/
 
 tests/__pycache__/
+
+app/crypto/__pycache__/

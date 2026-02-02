@@ -132,6 +132,7 @@ async def get_stats(request: Request):
 
     return {
         "active_connections": connection_manager.connection_count,
+        "encrypted_connections": connection_manager.encrypted_connection_count,
         "registered_tunnels": await registry.count(),
         "active_sessions": session_manager.count,
         "security": challenge_manager.get_stats()

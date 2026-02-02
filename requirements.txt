@@ -7,7 +7,7 @@ pydantic>=2.0
 pydantic-settings>=2.0
 
 # Stellar/Crypto
-hvym_stellar>=0.22.0
+hvym_stellar>=0.23.0
 stellar-sdk>=9.0.0
 pynacl>=1.5.0
 

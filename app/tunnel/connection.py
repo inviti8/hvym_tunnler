@@ -1,5 +1,5 @@
 """
-WebSocket connection management for tunnels.
+WebSocket connection management for tunnels with E2E encryption.
 """
 
 import json
@@ -9,18 +9,21 @@ from typing import Dict, Optional, Any
 from dataclasses import dataclass, field
 
 from fastapi import WebSocket
+from nacl.exceptions import CryptoError
 
 from ..auth.session import TunnelSession, SessionManager
 from ..registry.store import TunnelRegistry
+from ..crypto.tunnel_crypto import TunnelCryptoNegotiator
 
 logger = logging.getLogger("hvym_tunnler.connection")
 
 
 @dataclass
 class TunnelConnection:
-    """Active tunnel connection."""
+    """Active tunnel connection with optional E2E encryption."""
     websocket: WebSocket
     session: TunnelSession
+    crypto: TunnelCryptoNegotiator = field(default_factory=TunnelCryptoNegotiator)
     streams: Dict[int, asyncio.Queue] = field(default_factory=dict)
     _next_stream_id: int = 1
 
@@ -33,11 +36,12 @@ class TunnelConnection:
 
 class TunnelConnectionManager:
     """
-    Manages WebSocket connections for tunnels.
+    Manages WebSocket connections for tunnels with E2E encryption.
 
     Handles:
     - Connection lifecycle
-    - Message routing
+    - E2E encryption negotiation
+    - Message routing (encrypted or plaintext)
     - Stream multiplexing
     - Health monitoring
     """
@@ -64,17 +68,21 @@ class TunnelConnectionManager:
 
         Args:
             websocket: The WebSocket connection
-            session: Authenticated session
+            session: Authenticated session (with optional shared_key)
         """
         stellar_address = session.stellar_address
 
         # Build endpoint URL
         endpoint_url = session.build_endpoint_url(self.domain)
 
+        # Create crypto negotiator with shared key if available
+        crypto = TunnelCryptoNegotiator(session.shared_key)
+
         # Create connection object
         connection = TunnelConnection(
             websocket=websocket,
-            session=session
+            session=session,
+            crypto=crypto
         )
 
         # Register connection
@@ -98,14 +106,6 @@ class TunnelConnectionManager:
 
         # Register in session manager
         await self.session_manager.create_session(session)
-
-        # Send auth confirmation
-        await websocket.send_json({
-            "type": "auth_ok",
-            "endpoint": endpoint_url,
-            "server_address": self.registry.server_address,
-            "services": session.services
-        })
 
         logger.info(f"Tunnel established: {stellar_address} -> {endpoint_url}")
 
@@ -139,11 +139,45 @@ class TunnelConnectionManager:
         """Process incoming message from client."""
         try:
             data = json.loads(message)
+
+            # Handle encrypted messages
+            if data.get("encrypted"):
+                try:
+                    data = connection.crypto.unwrap_incoming(data)
+                except CryptoError as e:
+                    logger.warning(
+                        f"Decryption failed from {connection.session.stellar_address}: {e}"
+                    )
+                    return
+
             msg_type = data.get("type")
 
             if msg_type == "pong":
                 # Keepalive response - acknowledged
                 pass
+
+            elif msg_type == "enable_encryption":
+                # Client requesting E2E encryption
+                if connection.crypto.enable_encryption():
+                    await self._send_message(connection, {
+                        "type": "encryption_enabled",
+                        "mode": "XSalsa20-Poly1305"
+                    })
+                    logger.info(
+                        f"E2E encryption enabled for {connection.session.stellar_address}"
+                    )
+                else:
+                    await self._send_message(connection, {
+                        "type": "encryption_unavailable",
+                        "reason": "No shared key available"
+                    })
+
+            elif msg_type == "disable_encryption":
+                # Client disabling E2E encryption
+                connection.crypto.disable_encryption()
+                await self._send_message(connection, {
+                    "type": "encryption_disabled"
+                })
 
             elif msg_type == "bind":
                 # Client binding a local port
@@ -153,7 +187,7 @@ class TunnelConnectionManager:
                     f"Bind request: {connection.session.stellar_address} "
                     f"{service} -> localhost:{local_port}"
                 )
-                await connection.websocket.send_json({
+                await self._send_message(connection, {
                     "type": "bind_ok",
                     "service": service,
                     "local_port": local_port
@@ -173,7 +207,7 @@ class TunnelConnectionManager:
                     await connection.streams[stream_id].put(None)
                     del connection.streams[stream_id]
 
-            elif msg_type == "tunnel_response":
+            elif msg_type in ("tunnel_response", "tunnel_response_encrypted"):
                 # Response to a forwarded request
                 stream_id = data.get("stream_id")
                 response = data.get("response")
@@ -191,6 +225,27 @@ class TunnelConnectionManager:
             logger.error(
                 f"Error handling message from {connection.session.stellar_address}: {e}"
             )
+
+    async def _send_message(
+        self,
+        connection: TunnelConnection,
+        message: dict,
+        encrypt: bool = False
+    ):
+        """
+        Send a message to the client.
+
+        Args:
+            connection: Target connection
+            message: Message dict to send
+            encrypt: Force encryption (if available)
+        """
+        if encrypt and connection.crypto.is_encrypted:
+            msg_type = message.pop("type", "message")
+            wrapped = connection.crypto.wrap_outgoing(msg_type, message)
+            await connection.websocket.send_json(wrapped)
+        else:
+            await connection.websocket.send_json(message)
 
     async def _handle_stream_data(
         self,
@@ -238,7 +293,7 @@ class TunnelConnectionManager:
         timeout: float = 30.0
     ) -> Optional[dict]:
         """
-        Forward an HTTP request to a client tunnel.
+        Forward an HTTP request to a client tunnel with E2E encryption.
 
         Args:
             stellar_address: Target client's address
@@ -259,12 +314,25 @@ class TunnelConnectionManager:
         connection.streams[stream_id] = response_queue
 
         try:
+            # Build message (encrypted if E2E is enabled)
+            if connection.crypto.is_encrypted:
+                message = connection.crypto.wrap_tunnel_request(
+                    stream_id=stream_id,
+                    request_data=request_data
+                )
+                logger.debug(
+                    f"Sending encrypted request to {stellar_address} "
+                    f"(stream {stream_id})"
+                )
+            else:
+                message = {
+                    "type": "tunnel_request",
+                    "stream_id": stream_id,
+                    "request": request_data
+                }
+
             # Send request to client
-            await connection.websocket.send_json({
-                "type": "tunnel_request",
-                "stream_id": stream_id,
-                "request": request_data
-            })
+            await connection.websocket.send_json(message)
 
             # Wait for response
             response = await asyncio.wait_for(
@@ -282,11 +350,11 @@ class TunnelConnectionManager:
         finally:
             connection.streams.pop(stream_id, None)
 
-    async def broadcast(self, message: dict):
+    async def broadcast(self, message: dict, encrypt: bool = False):
         """Broadcast a message to all connected clients."""
         for addr, conn in self._connections.items():
             try:
-                await conn.websocket.send_json(message)
+                await self._send_message(conn, message.copy(), encrypt=encrypt)
             except Exception as e:
                 logger.warning(f"Failed to broadcast to {addr}: {e}")
 
@@ -310,6 +378,14 @@ class TunnelConnectionManager:
         """Get count of active connections."""
         return len(self._connections)
 
+    @property
+    def encrypted_connection_count(self) -> int:
+        """Get count of connections with E2E encryption enabled."""
+        return sum(
+            1 for conn in self._connections.values()
+            if conn.crypto.is_encrypted
+        )
+
     async def list_connections(self) -> list:
         """List all active connections."""
         return [
@@ -317,7 +393,8 @@ class TunnelConnectionManager:
                 "stellar_address": conn.session.stellar_address,
                 "endpoint": conn.session.endpoint_url,
                 "services": conn.session.services,
-                "connected_at": conn.session.connected_at.isoformat()
+                "connected_at": conn.session.connected_at.isoformat(),
+                "encrypted": conn.crypto.is_encrypted
             }
             for conn in self._connections.values()
         ]

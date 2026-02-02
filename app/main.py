@@ -271,13 +271,15 @@ async def websocket_tunnel(websocket: WebSocket):
     except Exception as e:
         logger.debug(f"Could not derive shared key: {e}")
 
-    # Send auth success
+    # Send auth success with E2E encryption capability
     endpoint_url = f"https://{claims['sub']}.{settings.domain}"
     await websocket.send_json({
         "type": "auth_ok",
         "endpoint": endpoint_url,
         "server_address": settings.server_address,
-        "services": requested_services
+        "services": requested_services,
+        "encryption_available": session.shared_key is not None,
+        "encryption_mode": "XSalsa20-Poly1305" if session.shared_key else None
     })
 
     # Handle connection
