@@ -74,6 +74,10 @@ class IdentitySetup:
         log_level: str
     ):
         """Write .env file with server credentials."""
+        # Convert comma-separated services to JSON array for pydantic-settings
+        services_list = [s.strip() for s in allowed_services.split(",")]
+        services_json = json.dumps(services_list)
+
         env_content = f"""# HVYM Tunnler Server Configuration
 # Generated: {datetime.now(timezone.utc).isoformat()}
 # WARNING: Keep TUNNLER_SERVER_SECRET secure! Back it up safely.
@@ -90,8 +94,8 @@ TUNNLER_PORT=8000
 # Redis (local)
 TUNNLER_REDIS_URL=redis://localhost:6379
 
-# Services
-TUNNLER_ALLOWED_SERVICES={allowed_services}
+# Services (JSON array format required by pydantic-settings)
+TUNNLER_ALLOWED_SERVICES={services_json}
 
 # Logging
 TUNNLER_LOG_LEVEL={log_level}
