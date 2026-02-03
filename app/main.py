@@ -17,6 +17,7 @@ from .auth.challenge import ChallengeManager, ChallengeError, RateLimitError
 from .tunnel.connection import TunnelConnectionManager
 from .registry.store import TunnelRegistry
 from .api.routes import router as api_router
+from .api.identity import router as identity_router
 
 
 # Configure logging
@@ -98,6 +99,7 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(api_router)
+app.include_router(identity_router)
 
 
 # Health check endpoint
