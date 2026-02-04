@@ -1,23 +1,24 @@
 #!/bin/bash
 #
-# HVYM Tunnler - Oracle Cloud VM Startup Script
+# HVYM Tunnler - VPS Startup Script
 #
-# This script is designed to be pasted into Oracle Cloud's cloud-init
-# configuration when creating a new VM instance.
-#
-# It performs full server initialization on first boot only.
-# Subsequent boots are handled by systemd services.
+# Universal startup script that works on any VPS provider:
+#   - Oracle Cloud (via cloud-init or manual)
+#   - DigitalOcean, Linode, Vultr, Hetzner
+#   - Container-based VPS (OpenVZ, LXC)
+#   - Any Ubuntu/Debian server
 #
 # Usage:
-#   1. Create new Oracle Cloud Compute instance
-#   2. Under "Advanced Options" > "Cloud-init script"
-#   3. Paste this entire script
-#   4. Launch instance
+#   curl -O https://raw.githubusercontent.com/inviti8/hvym_tunnler/master/scripts/vps_startup.sh
+#   chmod +x vps_startup.sh
+#   sudo ./vps_startup.sh
+#
+# Or via cloud-init: paste into "user data" / "startup script" field
 #
 # Logs: /var/log/hvym-startup.log
 #
 
-set -euo pipefail
+set -uo pipefail  # Note: removed -e to handle errors gracefully
 
 #=============================================================================
 # CONFIGURATION - Modify these variables for your deployment
@@ -95,26 +96,95 @@ echo ""
 echo "--- Phase 1: System Setup ---"
 echo ""
 
-echo "Updating package lists..."
-apt update
+# Check if running as root
+if [[ $EUID -ne 0 ]]; then
+    echo "ERROR: This script must be run as root (use sudo)"
+    exit 1
+fi
 
-echo "Upgrading existing packages..."
-apt upgrade -y
+# Detect package manager
+if command -v apt &> /dev/null; then
+    PKG_MANAGER="apt"
+elif command -v dnf &> /dev/null; then
+    PKG_MANAGER="dnf"
+elif command -v yum &> /dev/null; then
+    PKG_MANAGER="yum"
+else
+    echo "ERROR: No supported package manager found (apt/dnf/yum)"
+    exit 1
+fi
 
-echo "Installing required packages..."
-apt install -y \
-    python3.11 \
-    python3.11-venv \
-    python3-pip \
-    nginx \
-    certbot \
-    python3-certbot-nginx \
-    git \
-    curl \
-    redis-server \
-    ufw \
-    jq
+echo "Detected package manager: $PKG_MANAGER"
 
+if [[ "$PKG_MANAGER" == "apt" ]]; then
+    echo "Updating package lists..."
+    apt update
+
+    echo "Upgrading existing packages..."
+    apt upgrade -y
+
+    # Determine Python version available
+    PYTHON_PKG="python3"
+    PYTHON_VENV_PKG="python3-venv"
+    if apt-cache show python3.11 &>/dev/null; then
+        PYTHON_PKG="python3.11"
+        PYTHON_VENV_PKG="python3.11-venv"
+    elif apt-cache show python3.10 &>/dev/null; then
+        PYTHON_PKG="python3.10"
+        PYTHON_VENV_PKG="python3.10-venv"
+    fi
+
+    echo "Installing required packages (Python: $PYTHON_PKG)..."
+    apt install -y \
+        "$PYTHON_PKG" \
+        "$PYTHON_VENV_PKG" \
+        python3-pip \
+        nginx \
+        certbot \
+        python3-certbot-nginx \
+        git \
+        curl \
+        redis-server \
+        ufw \
+        jq || {
+            echo "WARNING: Some packages failed to install, continuing..."
+        }
+
+elif [[ "$PKG_MANAGER" == "dnf" ]] || [[ "$PKG_MANAGER" == "yum" ]]; then
+    echo "Updating packages..."
+    $PKG_MANAGER update -y
+
+    echo "Installing required packages..."
+    $PKG_MANAGER install -y \
+        python3 \
+        python3-pip \
+        nginx \
+        certbot \
+        python3-certbot-nginx \
+        git \
+        curl \
+        redis \
+        firewalld \
+        jq || {
+            echo "WARNING: Some packages failed to install, continuing..."
+        }
+fi
+
+# Find the Python executable
+PYTHON_BIN=""
+for py in python3.11 python3.10 python3; do
+    if command -v "$py" &> /dev/null; then
+        PYTHON_BIN="$py"
+        break
+    fi
+done
+
+if [[ -z "$PYTHON_BIN" ]]; then
+    echo "ERROR: No Python 3 found"
+    exit 1
+fi
+
+echo "Using Python: $PYTHON_BIN ($($PYTHON_BIN --version))"
 echo "Package installation complete."
 echo ""
 
@@ -125,18 +195,55 @@ echo ""
 echo "--- Phase 2: Firewall Configuration ---"
 echo ""
 
-# Check if UFW is already configured
-if ufw status | grep -q "Status: active"; then
-    echo "Firewall already active, checking rules..."
-else
-    echo "Configuring firewall..."
-    ufw allow 22/tcp comment "SSH"
-    ufw allow 80/tcp comment "HTTP"
-    ufw allow 443/tcp comment "HTTPS"
-    ufw --force enable
-fi
+# Detect if running in a container (OpenVZ, LXC, Docker)
+# Containers typically can't modify kernel/firewall settings
+detect_container() {
+    # Check for container indicators
+    if [[ -f /proc/1/environ ]] && grep -qa 'container=' /proc/1/environ 2>/dev/null; then
+        return 0  # Is container
+    fi
+    if [[ -f /run/systemd/container ]]; then
+        return 0  # Is container
+    fi
+    if grep -qa 'docker\|lxc\|openvz' /proc/1/cgroup 2>/dev/null; then
+        return 0  # Is container
+    fi
+    if [[ ! -w /proc/sys/net/ipv4/ip_forward ]] 2>/dev/null; then
+        return 0  # Can't write to sysctl = likely container
+    fi
+    return 1  # Not a container
+}
 
-ufw status verbose
+if detect_container; then
+    echo "Container-based VPS detected (OpenVZ/LXC/Docker)"
+    echo "Skipping UFW configuration - use provider's firewall instead"
+    echo ""
+    echo "IMPORTANT: Configure firewall in your VPS provider's dashboard:"
+    echo "  - Allow TCP port 22 (SSH)"
+    echo "  - Allow TCP port 80 (HTTP)"
+    echo "  - Allow TCP port 443 (HTTPS)"
+    echo ""
+elif ! command -v ufw &> /dev/null; then
+    echo "UFW not available, skipping firewall configuration"
+    echo "Ensure ports 22, 80, 443 are open via your provider's firewall"
+    echo ""
+else
+    # Full VM - configure UFW
+    if ufw status 2>/dev/null | grep -q "Status: active"; then
+        echo "Firewall already active, checking rules..."
+    else
+        echo "Configuring firewall..."
+        ufw allow 22/tcp comment "SSH" || true
+        ufw allow 80/tcp comment "HTTP" || true
+        ufw allow 443/tcp comment "HTTPS" || true
+        if ufw --force enable; then
+            echo "UFW enabled successfully"
+        else
+            echo "WARNING: UFW failed to enable - configure firewall manually"
+        fi
+    fi
+    ufw status verbose 2>/dev/null || echo "Could not get UFW status"
+fi
 echo ""
 
 #-----------------------------------------------------------------------------
@@ -186,19 +293,42 @@ echo ""
 echo "--- Phase 5: Python Environment Setup ---"
 echo ""
 
+# Re-detect Python if not set (in case script is run in parts)
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+    for py in python3.11 python3.10 python3; do
+        if command -v "$py" &> /dev/null; then
+            PYTHON_BIN="$py"
+            break
+        fi
+    done
+fi
+
+echo "Using Python: $PYTHON_BIN"
+
 if [[ -f "${VENV_DIR}/bin/python" ]]; then
     echo "Virtual environment already exists"
 else
     echo "Creating Python virtual environment..."
-    sudo -u "$HVYM_USER" python3.11 -m venv "$VENV_DIR"
+    sudo -u "$HVYM_USER" "$PYTHON_BIN" -m venv "$VENV_DIR" || {
+        echo "ERROR: Failed to create virtual environment"
+        echo "Trying with --without-pip flag..."
+        sudo -u "$HVYM_USER" "$PYTHON_BIN" -m venv --without-pip "$VENV_DIR"
+        # Bootstrap pip manually
+        curl -sS https://bootstrap.pypa.io/get-pip.py | sudo -u "$HVYM_USER" "${VENV_DIR}/bin/python"
+    }
 fi
 
 echo "Installing Python dependencies..."
-sudo -u "$HVYM_USER" "${VENV_DIR}/bin/pip" install --upgrade pip
-sudo -u "$HVYM_USER" "${VENV_DIR}/bin/pip" install -r "${TUNNLER_DIR}/requirements.txt"
+sudo -u "$HVYM_USER" "${VENV_DIR}/bin/pip" install --upgrade pip || true
+sudo -u "$HVYM_USER" "${VENV_DIR}/bin/pip" install -r "${TUNNLER_DIR}/requirements.txt" || {
+    echo "ERROR: Failed to install requirements"
+    exit 1
+}
 
 # Install QR code dependencies for setup script
-sudo -u "$HVYM_USER" "${VENV_DIR}/bin/pip" install "qrcode[pil]" Pillow
+sudo -u "$HVYM_USER" "${VENV_DIR}/bin/pip" install "qrcode[pil]" Pillow || {
+    echo "WARNING: Failed to install QR code dependencies"
+}
 
 echo "Python environment ready."
 echo ""

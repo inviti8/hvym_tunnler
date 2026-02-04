@@ -188,7 +188,7 @@ For our use case, we need **two scripts**:
 
 | Script | Trigger | Purpose |
 |--------|---------|---------|
-| `oracle_startup.sh` | Cloud-init (first boot only) | Full initialization |
+| `vps_startup.sh` | Cloud-init (first boot only) | Full initialization |
 | `hvym-tunnler-boot.service` | Systemd (every boot) | Health check & service recovery |
 
 ### Recommended Architecture
@@ -197,7 +197,7 @@ For our use case, we need **two scripts**:
 ┌─────────────────────────────────────────────────────────────────┐
 │                         FIRST BOOT                               │
 ├─────────────────────────────────────────────────────────────────┤
-│  cloud-init → oracle_startup.sh                                  │
+│  cloud-init → vps_startup.sh                                  │
 │    ├── Install packages                                          │
 │    ├── Create user, clone repo                                   │
 │    ├── Generate keypair                                          │
@@ -247,7 +247,7 @@ MARKER="/var/lib/hvym-tunnler/.initialized"
 ENV_FILE="/home/hvym/hvym_tunnler/.env"
 
 if [[ ! -f "$MARKER" ]]; then
-    echo "WARNING: Server not initialized. Run oracle_startup.sh"
+    echo "WARNING: Server not initialized. Run vps_startup.sh"
     exit 0  # Don't block boot
 fi
 
@@ -271,7 +271,7 @@ This approach ensures:
 
 ## Components
 
-### 1. Shell Startup Script (`scripts/oracle_startup.sh`)
+### 1. Shell Startup Script (`scripts/vps_startup.sh`)
 
 **Purpose:** Run by Oracle cloud-init on first boot to bootstrap the entire system.
 
@@ -545,7 +545,7 @@ app.include_router(identity_router)
 ```
 hvym_tunnler/
 ├── scripts/
-│   ├── oracle_startup.sh      # NEW: Cloud-init startup script
+│   ├── vps_startup.sh      # NEW: Cloud-init startup script
 │   ├── setup_identity.py      # NEW: Identity generation script
 │   └── install_certs.sh       # Optional: SSL cert helper
 ├── app/
@@ -605,10 +605,10 @@ Location: app/api/identity.py
 - Only exposes PUBLIC key, never secret
 - Rate limiting inherited from main app
 
-### Phase 3: Create oracle_startup.sh
+### Phase 3: Create vps_startup.sh
 
 ```
-Location: scripts/oracle_startup.sh
+Location: scripts/vps_startup.sh
 ```
 
 **Script sections:**
@@ -805,7 +805,7 @@ curl http://localhost:8000/server-identity/qr -o test_qr.png
 ### Oracle Cloud Testing
 
 1. Create Oracle Always Free VM (Ubuntu 22.04)
-2. Paste `oracle_startup.sh` into Cloud-init script field
+2. Paste `vps_startup.sh` into Cloud-init script field
 3. Launch instance
 4. SSH in and check:
    ```bash
@@ -833,7 +833,7 @@ The startup script accepts these environment variables (set in Oracle cloud-init
 #cloud-config
 runcmd:
   - export TUNNLER_DOMAIN="mytunnel.example.com"
-  - curl -sSL https://raw.githubusercontent.com/.../oracle_startup.sh | bash
+  - curl -sSL https://raw.githubusercontent.com/.../vps_startup.sh | bash
 ```
 
 ---
@@ -896,7 +896,7 @@ curl https://tunnel.yourdomain.com/server-identity
 - [x] Update `app/main.py`
   - [x] Import and include identity router
 
-- [x] Create `scripts/oracle_startup.sh` (cloud-init, runs once)
+- [x] Create `scripts/vps_startup.sh` (cloud-init, runs once)
   - [x] **Configurable variables at top of file**
   - [x] System package installation
   - [x] User creation
@@ -918,7 +918,7 @@ curl https://tunnel.yourdomain.com/server-identity
   - [x] Non-blocking (don't prevent boot on warning)
   - [x] Regenerate QR/metadata if missing
 
-- [x] Create `hvym-tunnler-boot.service` (embedded in oracle_startup.sh)
+- [x] Create `hvym-tunnler-boot.service` (embedded in vps_startup.sh)
   - [x] Type=oneshot, runs before main service
   - [x] Executes boot_check.sh
   - [x] RemainAfterExit=yes
@@ -942,6 +942,6 @@ curl https://tunnel.yourdomain.com/server-identity
 
 ---
 
-## Appendix: Full oracle_startup.sh Template
+## Appendix: Full vps_startup.sh Template
 
-See `scripts/oracle_startup.sh` for the complete implementation.
+See `scripts/vps_startup.sh` for the complete implementation.
