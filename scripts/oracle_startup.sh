@@ -24,7 +24,7 @@ set -euo pipefail
 #=============================================================================
 
 # Domain for tunnel endpoints (e.g., tunnel.yourdomain.com)
-DOMAIN="tunnel.heavymeta.art"
+DOMAIN="tunnel.hvym.link"
 
 # Git repository URL
 REPO_URL="https://github.com/inviti8/hvym_tunnler.git"
