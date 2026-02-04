@@ -54,6 +54,9 @@ MARKER_DIR="/var/lib/hvym-tunnler"
 MARKER_FILE="${MARKER_DIR}/.initialized"
 LOG_FILE="/var/log/hvym-startup.log"
 
+# Ensure PATH is set (fixes issues on container-based VPS like OpenVZ/LXC)
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
 # Redirect all output to log file
 exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -435,17 +438,24 @@ upstream tunnler {
     keepalive 32;
 }
 
-# HTTP server (for initial setup and certbot)
+# Map to extract Stellar address from subdomain
+# Example: GADDR.tunnel.hvym.link -> GADDR
+map \$host \$stellar_address {
+    ~^(?<addr>[A-Z0-9]+)\.${DOMAIN//./\\.}\$ \$addr;
+    default "";
+}
+
+# HTTP server for base domain (API, WebSocket, certbot)
 server {
     listen 80;
-    server_name ${DOMAIN} *.${DOMAIN};
+    server_name ${DOMAIN};
 
     # Certbot challenge
     location /.well-known/acme-challenge/ {
         root /var/www/html;
     }
 
-    # API and WebSocket (before SSL is configured)
+    # WebSocket for tunnel connections
     location /connect {
         proxy_pass http://tunnler;
         proxy_http_version 1.1;
@@ -459,6 +469,7 @@ server {
         proxy_send_timeout 86400;
     }
 
+    # API and health endpoints
     location / {
         proxy_pass http://tunnler;
         proxy_http_version 1.1;
@@ -466,6 +477,29 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+
+# HTTP server for tunnel subdomains (GADDR.tunnel.hvym.link)
+server {
+    listen 80;
+    server_name *.${DOMAIN};
+
+    # Certbot challenge
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    # All requests to subdomains go through the proxy endpoint
+    location / {
+        # Rewrite to /proxy path with stellar address in header
+        proxy_pass http://tunnler/proxy/\$uri\$is_args\$args;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Stellar-Address \$stellar_address;
     }
 }
 
@@ -554,30 +588,45 @@ echo "  Identity: http://${DOMAIN}/server-identity"
 echo "  QR Code:  http://${DOMAIN}/server-identity/qr"
 echo ""
 echo "Next Steps:"
-echo "  1. Configure DNS (add these A records):"
-echo "     ${DOMAIN}      A    $(curl -s ifconfig.me 2>/dev/null || echo 'YOUR_IP')"
-echo "     *.${DOMAIN}    A    $(curl -s ifconfig.me 2>/dev/null || echo 'YOUR_IP')"
+echo "  1. Configure DNS (add these A records in your DNS provider):"
+echo ""
+echo "     Name              Type    Value"
+echo "     ─────────────────────────────────────────────────────"
+echo "     ${DOMAIN}      A       $(curl -s ifconfig.me 2>/dev/null || echo 'YOUR_IP')"
+echo "     *.${DOMAIN}    A       $(curl -s ifconfig.me 2>/dev/null || echo 'YOUR_IP')"
+echo ""
+echo "     Wait for DNS propagation (1-5 min), then verify:"
+echo "     dig +short ${DOMAIN}"
 echo ""
 echo "  2. Install SSL certificate (wildcard requires DNS challenge):"
 echo ""
-echo "     # First, ensure PATH is set (container VPS fix):"
-echo "     export PATH=\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\""
+echo "     NOTE: On some container VPS (OpenVZ/LXC), you may need to set PATH first:"
+echo "     export PATH=\"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\$PATH\""
 echo ""
-echo "     # Run certbot with DNS challenge for wildcard cert:"
+echo "     Step A - Request the certificate:"
+echo "     ─────────────────────────────────────────────────────"
 echo "     certbot certonly --manual --preferred-challenges dns \\"
 echo "       -d ${DOMAIN} -d \"*.${DOMAIN}\""
 echo ""
-echo "     # When prompted, add a TXT record to your DNS:"
-echo "     #   Name:  _acme-challenge.${DOMAIN}"
-echo "     #   Type:  TXT"
-echo "     #   Value: (certbot will provide this)"
+echo "     Step B - When certbot prompts, add a DNS TXT record:"
+echo "     ─────────────────────────────────────────────────────"
+echo "     Name:   _acme-challenge.${DOMAIN}"
+echo "     Type:   TXT"
+echo "     Value:  (certbot will display this value)"
 echo ""
-echo "     # Wait 1-2 min for DNS propagation, then press Enter."
-echo "     # After success, configure nginx to use the certs:"
+echo "     Wait 1-2 minutes for DNS propagation, then press Enter in certbot."
+echo "     You can verify the TXT record with:"
+echo "     dig +short TXT _acme-challenge.${DOMAIN}"
+echo ""
+echo "     Step C - Configure nginx with the new certificate:"
+echo "     ─────────────────────────────────────────────────────"
 echo "     certbot install --nginx -d ${DOMAIN} -d \"*.${DOMAIN}\""
 echo ""
 echo "  3. Test the server:"
 echo "     curl https://${DOMAIN}/health"
+echo ""
+echo "  4. View server QR code:"
+echo "     https://${DOMAIN}/server-identity/qr"
 echo ""
 echo "Logs:"
 echo "  Startup:  /var/log/hvym-startup.log"
