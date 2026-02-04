@@ -441,7 +441,7 @@ upstream tunnler {
 # Map to extract Stellar address from subdomain
 # Example: GADDR.tunnel.hvym.link -> GADDR
 map \$host \$stellar_address {
-    ~^(?<addr>[A-Z0-9]+)\.${DOMAIN//./\\.}\$ \$addr;
+    ~*^(?<addr>[A-Za-z0-9]+)\.${DOMAIN//./\\.}\$ \$addr;
     default "";
 }
 

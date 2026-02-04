@@ -29,7 +29,10 @@ async def proxy_request(request: Request, path: str):
     connection_manager = request.app.state.connection_manager
 
     # Get stellar address from header (set by nginx)
+    # Convert to uppercase since Stellar addresses are uppercase but nginx sends lowercase
     stellar_address = request.headers.get("X-Stellar-Address")
+    if stellar_address:
+        stellar_address = stellar_address.upper()
 
     if not stellar_address:
         raise HTTPException(
