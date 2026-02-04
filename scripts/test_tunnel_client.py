@@ -54,7 +54,7 @@ TEST_HTML = """<!DOCTYPE html>
 <head>
     <title>HVYM Tunnel Test</title>
     <style>
-        body {
+        body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
@@ -62,19 +62,19 @@ TEST_HTML = """<!DOCTYPE html>
             display: flex;
             justify-content: center;
             align-items: center;
-        }
-        .card {
+        }}
+        .card {{
             background: white;
             border-radius: 16px;
             padding: 40px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             text-align: center;
             max-width: 500px;
-        }
-        h1 { color: #333; margin-bottom: 10px; }
-        p { color: #666; }
-        .success { color: #22c55e; font-weight: bold; }
-        .address {
+        }}
+        h1 {{ color: #333; margin-bottom: 10px; }}
+        p {{ color: #666; }}
+        .success {{ color: #22c55e; font-weight: bold; }}
+        .address {{
             background: #f5f5f5;
             padding: 10px;
             border-radius: 8px;
@@ -82,12 +82,12 @@ TEST_HTML = """<!DOCTYPE html>
             font-size: 0.8em;
             word-break: break-all;
             margin-top: 20px;
-        }
+        }}
     </style>
 </head>
 <body>
     <div class="card">
-        <h1>🎉 Tunnel Working!</h1>
+        <h1>Tunnel Working!</h1>
         <p class="success">Your local server is now accessible via the tunnel.</p>
         <p>This page is being served from your local machine through the HVYM Tunnel.</p>
         <div class="address">
@@ -303,7 +303,7 @@ class TunnelClient:
                 ) as resp:
                     response_body = await resp.text()
                     return {
-                        "status": resp.status,
+                        "status_code": resp.status,
                         "headers": dict(resp.headers),
                         "body": response_body
                     }
