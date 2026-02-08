@@ -212,12 +212,66 @@ tail -f /var/log/nginx/error.log
 cat /var/log/hvym-startup.log
 ```
 
+## Custom Domains
+
+Users can map their own domains (e.g. `gallery.example.com`) to their Stellar-address tunnel endpoint. This is handled automatically by the server -- no manual nginx config or reloads needed.
+
+### How it works
+
+1. User registers a domain via `POST /api/domains` (JWT-authenticated).
+2. User adds a DNS CNAME record pointing their domain to your tunnel domain.
+3. User triggers verification via `POST /api/domains/{domain}/verify`.
+4. On success, certbot issues an SSL certificate using HTTP-01 challenges against `/var/www/acme`.
+5. The nginx catch-all server block uses `$ssl_server_name` to dynamically load per-domain certs -- no reload required.
+
+### Requirements
+
+The startup script creates the ACME webroot (`/var/www/acme`) and configures the nginx catch-all blocks automatically. If you deployed before custom domain support was added, you'll need to either:
+
+- Re-run `vps_startup.sh` (delete `/var/lib/hvym-tunnler/.initialized` first), or
+- Manually apply the changes:
+
+```bash
+# Create ACME webroot
+sudo mkdir -p /var/www/acme
+
+# Copy updated nginx config and reload
+sudo cp config/nginx-hvym-tunnler.conf /etc/nginx/sites-available/hvym-tunnler
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### Domain API endpoints
+
+All endpoints require a Stellar JWT Bearer token.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/domains` | Register a new custom domain |
+| `GET` | `/api/domains` | List domains for your address |
+| `GET` | `/api/domains/{domain}` | Get domain details |
+| `POST` | `/api/domains/{domain}/verify` | Trigger DNS verification |
+| `DELETE` | `/api/domains/{domain}` | Remove a domain mapping |
+
+### Limits
+
+- Max 5 custom domains per Stellar address (configurable via `TUNNLER_MAX_DOMAINS_PER_ADDRESS`)
+- Unverified domains expire after 72 hours (configurable via `TUNNLER_DOMAIN_VERIFICATION_EXPIRY`)
+
 ## Updating
 
 ```bash
 cd /home/hvym/hvym_tunnler
 git pull
+pip install -r requirements.txt  # picks up new dependencies like dnspython
 systemctl restart hvym-tunnler
+```
+
+If the nginx config has changed (e.g. adding custom domain support), also update it:
+
+```bash
+sudo cp config/nginx-hvym-tunnler.conf /etc/nginx/sites-available/hvym-tunnler
+sudo mkdir -p /var/www/acme
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 ## Testing the Tunnel

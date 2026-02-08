@@ -431,6 +431,9 @@ echo ""
 echo "--- Phase 8: Nginx Configuration ---"
 echo ""
 
+# Create ACME webroot for certbot HTTP-01 challenges (used by custom domains)
+mkdir -p /var/www/acme
+
 echo "Installing nginx configuration..."
 cat > /etc/nginx/sites-available/hvym-tunnler << EOF
 upstream tunnler {
@@ -452,7 +455,7 @@ server {
 
     # Certbot challenge
     location /.well-known/acme-challenge/ {
-        root /var/www/html;
+        root /var/www/acme;
     }
 
     # WebSocket for tunnel connections
@@ -487,7 +490,7 @@ server {
 
     # Certbot challenge
     location /.well-known/acme-challenge/ {
-        root /var/www/html;
+        root /var/www/acme;
     }
 
     # All requests to subdomains go through the proxy endpoint
@@ -503,7 +506,41 @@ server {
     }
 }
 
-# Note: HTTPS configuration will be added by certbot after SSL setup
+# Catch-all for ACME challenges on custom domains (port 80)
+server {
+    listen 80 default_server;
+    server_name _;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/acme;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+# Catch-all for custom domains (port 443)
+server {
+    listen 443 ssl default_server;
+    server_name _;
+
+    ssl_certificate     /etc/letsencrypt/live/\$ssl_server_name/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/\$ssl_server_name/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        proxy_pass http://tunnler/proxy\$request_uri;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Custom-Domain \$host;
+    }
+}
+
+# Note: HTTPS server blocks for ${DOMAIN} will be added by certbot after SSL setup
 # Wildcard certs require DNS challenge - see summary at end of script
 EOF
 
@@ -627,6 +664,13 @@ echo "     curl https://${DOMAIN}/health"
 echo ""
 echo "  4. View server QR code:"
 echo "     https://${DOMAIN}/server-identity/qr"
+echo ""
+echo "  Custom Domains:"
+echo "     Users can register custom domains via the /api/domains endpoints."
+echo "     Custom domain SSL certificates are provisioned automatically via"
+echo "     certbot HTTP-01 challenges using /var/www/acme as the webroot."
+echo "     No nginx reload is needed -- the catch-all server block uses"
+echo "     dynamic \$ssl_server_name to pick up new certs automatically."
 echo ""
 echo "Logs:"
 echo "  Startup:  /var/log/hvym-startup.log"
