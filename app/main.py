@@ -18,6 +18,10 @@ from .tunnel.connection import TunnelConnectionManager
 from .registry.store import TunnelRegistry
 from .api.routes import router as api_router
 from .api.identity import router as identity_router
+from .api.domains import router as domains_router
+from .domains.registry import DomainRegistry
+from .domains.verification import DomainVerifier
+from .domains.ssl import SSLProvisioner
 
 
 # Configure logging
@@ -69,14 +73,51 @@ async def lifespan(app: FastAPI):
         domain=settings.domain
     )
 
+    # Initialize custom domain components
+    app.state.domain_registry = DomainRegistry(
+        redis_url=settings.redis_url,
+        max_domains_per_address=settings.max_domains_per_address,
+    )
+    app.state.domain_verifier = DomainVerifier(
+        tunnel_domain=settings.domain,
+    )
+    app.state.ssl_provisioner = SSLProvisioner(
+        webroot=settings.acme_webroot,
+        certbot_bin=settings.certbot_bin,
+        email=settings.acme_email or None,
+    )
+
+    # Background task: clean up expired pending domains hourly
+    import asyncio
+
+    async def _domain_cleanup_loop():
+        while True:
+            try:
+                await asyncio.sleep(3600)
+                await app.state.domain_registry.cleanup_expired_pending(
+                    settings.domain_verification_expiry
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Domain cleanup error: {e}")
+
+    cleanup_task = asyncio.create_task(_domain_cleanup_loop())
+
     logger.info("HVYM Tunnler ready")
 
     yield
 
     # Cleanup
     logger.info("HVYM Tunnler shutting down...")
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
     await app.state.connection_manager.shutdown()
     await app.state.registry.close()
+    await app.state.domain_registry.close()
     logger.info("HVYM Tunnler stopped")
 
 
@@ -100,6 +141,7 @@ app.add_middleware(
 # Include API routes
 app.include_router(api_router)
 app.include_router(identity_router)
+app.include_router(domains_router)
 
 
 # Health check endpoint

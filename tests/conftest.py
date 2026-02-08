@@ -45,3 +45,12 @@ def connection_manager(registry, session_manager):
         registry=registry,
         session_manager=session_manager
     )
+
+
+@pytest.fixture
+def domain_registry():
+    """Provide a domain registry using in-memory fallback."""
+    from app.domains.registry import DomainRegistry
+    reg = DomainRegistry(max_domains_per_address=5)
+    reg._use_redis = False
+    return reg

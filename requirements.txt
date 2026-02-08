@@ -19,6 +19,7 @@ pyyaml>=6.0
 python-multipart>=0.0.6
 httpx>=0.26.0
 python-dotenv>=1.0.0
+dnspython>=2.4.0
 
 # QR Code generation (for setup_identity.py)
 qrcode[pil]>=7.4

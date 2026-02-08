@@ -35,6 +35,14 @@ async def proxy_request(request: Request, path: str):
         stellar_address = stellar_address.upper()
 
     if not stellar_address:
+        custom_domain = request.headers.get("X-Custom-Domain")
+        if custom_domain:
+            domain_registry = request.app.state.domain_registry
+            domain_entry = await domain_registry.lookup(custom_domain.lower())
+            if domain_entry:
+                stellar_address = domain_entry.stellar_address
+
+    if not stellar_address:
         raise HTTPException(
             status_code=400,
             detail="Missing X-Stellar-Address header"

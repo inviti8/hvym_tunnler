@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # Debug mode
     debug: bool = False
 
+    # Custom Domains
+    acme_webroot: str = "/var/www/acme"
+    acme_email: str = ""
+    certbot_bin: str = "certbot"
+    max_domains_per_address: int = 5
+    domain_verification_expiry: int = 72  # hours
+
     model_config = {
         "env_prefix": "TUNNLER_",
         "env_file": ".env",
